@@ -6,10 +6,11 @@ export type Point = {
 };
 
 export type StrokePayload = {
-  from: Point;
-  to: Point;
+  id: string;
+  points: Point[];
   color: string;
-  width: number;
+  brushSize: number;
+  tool: "brush" | "eraser";
 };
 
 export type Player = {
@@ -39,7 +40,12 @@ export type RoomSettings = {
     | "Festivals"
     | "Places"
     | "Movies"
-    | "Farming";
+    | "Farming"
+    | "Animals"
+    | "Household"
+    | "School"
+    | "Nature"
+    | "Funny";
   difficulty: "Easy" | "Medium" | "Hard" | "Mixed";
 };
 
@@ -56,6 +62,8 @@ export type GameState = {
   isDrawer: boolean;
   gameStarted: boolean;
   gameOver: boolean;
+  gamePaused: boolean;
+  pausedMessage: string | null;
   hasActiveRound: boolean;
   isChoosingWord: boolean;
   hasGuessedCorrectly: boolean;

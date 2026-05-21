@@ -5,13 +5,30 @@ import confetti from "canvas-confetti";
 import { useRouter, useSearchParams } from "next/navigation";
 import { GameState, getSocket, Player, Point, RoomSettings, StrokePayload } from "@/app/lib/socket";
 
-const PEN_COLOR = "#1d2530";
-const PEN_WIDTH = 4;
+const DEFAULT_PEN_COLOR = "#1d2530";
+const DEFAULT_BRUSH_SIZE = 6;
+const TOOL_COLORS = [
+  { name: "black", value: "#1d2530" },
+  { name: "red", value: "#e63946" },
+  { name: "blue", value: "#2563eb" },
+  { name: "green", value: "#16825d" },
+  { name: "yellow", value: "#f4b942" },
+  { name: "orange", value: "#f97316" },
+  { name: "purple", value: "#8b5cf6" },
+  { name: "brown", value: "#8b5a2b" },
+  { name: "white", value: "#ffffff" }
+] as const;
+const BRUSH_SIZES = [
+  { label: "Small", value: 4 },
+  { label: "Medium", value: 8 },
+  { label: "Large", value: 14 },
+  { label: "XL", value: 22 }
+] as const;
 const STORAGE_KEYS = ["chitraguess:nickname", "chitraguess:roomCode"];
 const DEFAULT_SETTINGS: RoomSettings = {
   language: "Telugu",
   rounds: 3,
-  roundDurationSeconds: 90,
+  roundDurationSeconds: 120,
   category: "All",
   difficulty: "Mixed"
 };
@@ -24,7 +41,12 @@ const CATEGORY_OPTIONS = [
   "Festivals",
   "Places",
   "Movies",
-  "Farming"
+  "Farming",
+  "Animals",
+  "Household",
+  "School",
+  "Nature",
+  "Funny"
 ] as const;
 const DIFFICULTY_OPTIONS = ["Easy", "Medium", "Hard", "Mixed"] as const;
 
@@ -42,13 +64,21 @@ function drawStroke(canvas: HTMLCanvasElement, stroke: StrokePayload) {
     return;
   }
 
-  context.strokeStyle = stroke.color;
-  context.lineWidth = stroke.width;
+  if (stroke.points.length < 2) {
+    return;
+  }
+
+  const rect = canvas.getBoundingClientRect();
+  const scale = rect.width > 0 ? canvas.width / rect.width : 1;
+  context.strokeStyle = stroke.tool === "eraser" ? "#ffffff" : stroke.color;
+  context.lineWidth = stroke.brushSize * scale;
   context.lineCap = "round";
   context.lineJoin = "round";
   context.beginPath();
-  context.moveTo(stroke.from.x * canvas.width, stroke.from.y * canvas.height);
-  context.lineTo(stroke.to.x * canvas.width, stroke.to.y * canvas.height);
+  context.moveTo(stroke.points[0].x * canvas.width, stroke.points[0].y * canvas.height);
+  stroke.points.slice(1).forEach((point) => {
+    context.lineTo(point.x * canvas.width, point.y * canvas.height);
+  });
   context.stroke();
 }
 
@@ -61,18 +91,40 @@ function clearCanvas(canvas: HTMLCanvasElement) {
   context.clearRect(0, 0, canvas.width, canvas.height);
 }
 
+function redrawCanvas(canvas: HTMLCanvasElement, strokes: StrokePayload[]) {
+  clearCanvas(canvas);
+  strokes.forEach((stroke) => drawStroke(canvas, stroke));
+}
+
+function upsertStroke(strokes: StrokePayload[], stroke: StrokePayload) {
+  const existingIndex = strokes.findIndex((existingStroke) => existingStroke.id === stroke.id);
+  if (existingIndex >= 0) {
+    return strokes.map((existingStroke, index) => (index === existingIndex ? stroke : existingStroke));
+  }
+
+  return [...strokes, stroke];
+}
+
 export default function RoomClient({ code }: { code: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const celebratedGameOverRef = useRef(false);
-  const lastPointRef = useRef<Point | null>(null);
+  const currentStrokeRef = useRef<StrokePayload | null>(null);
+  const strokesRef = useRef<StrokePayload[]>([]);
+  const isMessagesAtBottomRef = useRef(true);
+  const previousLastMessageIdRef = useRef<string | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [status, setStatus] = useState("Connecting...");
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [guess, setGuess] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [penColor, setPenColor] = useState(DEFAULT_PEN_COLOR);
+  const [brushSize, setBrushSize] = useState(DEFAULT_BRUSH_SIZE);
+  const [activeTool, setActiveTool] = useState<StrokePayload["tool"]>("brush");
+  const [hasNewMessages, setHasNewMessages] = useState(false);
 
   const nickname = searchParams.get("nickname")?.trim() || "Guest";
 
@@ -85,15 +137,25 @@ export default function RoomClient({ code }: { code: string }) {
 
     function handleStroke(stroke: StrokePayload) {
       const canvas = canvasRef.current;
+      strokesRef.current = upsertStroke(strokesRef.current, stroke);
       if (canvas) {
-        drawStroke(canvas, stroke);
+        redrawCanvas(canvas, strokesRef.current);
       }
     }
 
     function handleClear() {
+      strokesRef.current = [];
       const canvas = canvasRef.current;
       if (canvas) {
         clearCanvas(canvas);
+      }
+    }
+
+    function handleDrawingHistory(strokes: StrokePayload[]) {
+      strokesRef.current = strokes;
+      const canvas = canvasRef.current;
+      if (canvas) {
+        redrawCanvas(canvas, strokesRef.current);
       }
     }
 
@@ -114,6 +176,7 @@ export default function RoomClient({ code }: { code: string }) {
     socket.on("players", handlePlayers);
     socket.on("draw-stroke", handleStroke);
     socket.on("clear-canvas", handleClear);
+    socket.on("drawing-history", handleDrawingHistory);
     socket.on("game-state", handleGameState);
     socket.on("error-message", handleErrorMessage);
 
@@ -124,6 +187,7 @@ export default function RoomClient({ code }: { code: string }) {
       socket.off("players", handlePlayers);
       socket.off("draw-stroke", handleStroke);
       socket.off("clear-canvas", handleClear);
+      socket.off("drawing-history", handleDrawingHistory);
       socket.off("game-state", handleGameState);
       socket.off("error-message", handleErrorMessage);
     };
@@ -140,6 +204,7 @@ export default function RoomClient({ code }: { code: string }) {
       const ratio = window.devicePixelRatio || 1;
       canvas.width = Math.floor(rect.width * ratio);
       canvas.height = Math.floor(rect.height * ratio);
+      redrawCanvas(canvas, strokesRef.current);
     };
 
     resizeCanvas();
@@ -179,42 +244,122 @@ export default function RoomClient({ code }: { code: string }) {
     });
   }, [gameState?.gameOver]);
 
-  function startDrawing(event: React.PointerEvent<HTMLCanvasElement>) {
-    if (gameState?.hasActiveRound && (!gameState.isDrawer || gameState.isChoosingWord)) {
+  useEffect(() => {
+    if (!errorMessage) {
       return;
     }
 
+    const timeout = window.setTimeout(() => setErrorMessage(""), 4500);
+    return () => window.clearTimeout(timeout);
+  }, [errorMessage]);
+
+  const lastMessageId = gameState?.messages.at(-1)?.id ?? null;
+
+  function scrollMessagesToBottom(behavior: ScrollBehavior = "smooth") {
+    const container = messagesContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior
+    });
+    isMessagesAtBottomRef.current = true;
+    setHasNewMessages(false);
+  }
+
+  function handleMessagesScroll() {
+    const container = messagesContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    const isAtBottom = distanceFromBottom < 48;
+    isMessagesAtBottomRef.current = isAtBottom;
+    if (isAtBottom) {
+      setHasNewMessages(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!lastMessageId) {
+      return;
+    }
+
+    const previousLastMessageId = previousLastMessageIdRef.current;
+    previousLastMessageIdRef.current = lastMessageId;
+
+    requestAnimationFrame(() => {
+      if (!previousLastMessageId || isMessagesAtBottomRef.current) {
+        scrollMessagesToBottom(previousLastMessageId ? "smooth" : "auto");
+        return;
+      }
+
+      setHasNewMessages(true);
+    });
+  }, [lastMessageId]);
+
+  function startDrawing(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (!gameState?.hasActiveRound || !gameState.isDrawer || gameState.isChoosingWord || gameState.gamePaused) {
+      return;
+    }
+
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    lastPointRef.current = pointerToPoint(event.currentTarget, event);
+    const point = pointerToPoint(event.currentTarget, event);
+    currentStrokeRef.current = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      points: [point],
+      color: activeTool === "eraser" ? "#ffffff" : penColor,
+      brushSize,
+      tool: activeTool
+    };
   }
 
   function draw(event: React.PointerEvent<HTMLCanvasElement>) {
-    if (gameState?.hasActiveRound && (!gameState.isDrawer || gameState.isChoosingWord)) {
+    if (!gameState?.hasActiveRound || !gameState.isDrawer || gameState.isChoosingWord || gameState.gamePaused) {
       return;
     }
 
-    const from = lastPointRef.current;
-    if (!from) {
+    event.preventDefault();
+    const stroke = currentStrokeRef.current;
+    if (!stroke) {
+      return;
+    }
+    if (stroke.points.length >= 500) {
       return;
     }
 
     const canvas = event.currentTarget;
-    const to = pointerToPoint(canvas, event);
-    const stroke = { from, to, color: PEN_COLOR, width: PEN_WIDTH };
-    drawStroke(canvas, stroke);
-    getSocket().emit("draw-stroke", { code, stroke });
-    lastPointRef.current = to;
+    const nextStroke = {
+      ...stroke,
+      points: [...stroke.points, pointerToPoint(canvas, event)]
+    };
+    currentStrokeRef.current = nextStroke;
+    strokesRef.current = upsertStroke(strokesRef.current, nextStroke);
+    redrawCanvas(canvas, strokesRef.current);
+    getSocket().emit("draw-stroke", { code, stroke: nextStroke });
   }
 
   function stopDrawing(event: React.PointerEvent<HTMLCanvasElement>) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    lastPointRef.current = null;
+    const stroke = currentStrokeRef.current;
+    if (stroke && stroke.points.length === 1) {
+      const point = stroke.points[0];
+      const nextStroke = { ...stroke, points: [point, point] };
+      strokesRef.current = upsertStroke(strokesRef.current, nextStroke);
+      redrawCanvas(event.currentTarget, strokesRef.current);
+      getSocket().emit("draw-stroke", { code, stroke: nextStroke });
+    }
+    currentStrokeRef.current = null;
   }
 
   function handleClearCanvas() {
-    if (gameState?.hasActiveRound && !gameState.isDrawer && !gameState.isHost) {
+    if (gameState?.gameStarted && (!gameState.hasActiveRound || !gameState.isDrawer)) {
       return;
     }
 
@@ -223,6 +368,14 @@ export default function RoomClient({ code }: { code: string }) {
       clearCanvas(canvas);
     }
     getSocket().emit("clear-canvas", { code });
+  }
+
+  function handleUndoStroke() {
+    if (!canDraw) {
+      return;
+    }
+
+    getSocket().emit("undo-stroke", { code });
   }
 
   function handleStartGame() {
@@ -275,7 +428,12 @@ export default function RoomClient({ code }: { code: string }) {
     Boolean(gameState?.hasActiveRound) &&
     !gameState?.isChoosingWord &&
     !gameState?.isDrawer &&
-    !gameState?.hasGuessedCorrectly;
+    !gameState?.hasGuessedCorrectly &&
+    !gameState?.gamePaused;
+  const canDraw = Boolean(
+    gameState?.hasActiveRound && gameState.isDrawer && !gameState.isChoosingWord && !gameState.gamePaused
+  );
+  const canClearCanvas = canDraw;
   const canStartGame = Boolean(gameState?.isHost) && !gameState?.gameStarted;
   const settings = gameState?.settings ?? DEFAULT_SETTINGS;
   const settingsLocked = Boolean(gameState?.gameStarted || gameState?.gameOver);
@@ -287,67 +445,122 @@ export default function RoomClient({ code }: { code: string }) {
 
     return topPlayer;
   }, gameState.scoreboard[0]);
+  const scoreboardEntries = gameState?.scoreboard.length
+    ? gameState.scoreboard
+    : players.map((player) => ({ ...player, score: 0 }));
+  const phaseLabel = gameState?.gameOver
+    ? "Game over"
+    : gameState?.gamePaused
+      ? "Paused"
+      : gameState?.hasActiveRound
+        ? gameState.isChoosingWord
+          ? "Choosing"
+          : "Drawing"
+        : "Lobby";
+  const statusTitle = gameState?.gamePaused
+    ? "Waiting for players"
+    : gameState?.hasActiveRound
+      ? gameState.isChoosingWord
+        ? gameState.isDrawer
+          ? "Choose your word"
+          : "Waiting for artist..."
+        : gameState.isDrawer
+          ? "🎨 Your turn to draw"
+          : `${gameState.drawerName} is drawing`
+      : gameState?.gameOver
+        ? "Final scores are in"
+        : "Ready to draw?";
+  const roundSummary = gameState?.gamePaused
+    ? (gameState.pausedMessage ?? "Waiting for one more player to continue.")
+    : gameState?.hasActiveRound
+      ? `Round ${gameState.currentRoundNumber} of ${gameState.selectedRounds} · Turn ${gameState.currentTurnInRound} of ${gameState.turnsPerRound}`
+      : gameState?.gameOver
+        ? `Completed ${gameState.totalTurns} drawing turns.`
+        : "Guess fast! Each player draws once per selected round.";
 
   return (
-    <main className="min-h-screen bg-paper px-3 py-4 text-ink sm:px-6">
-      <section className="mx-auto flex w-full max-w-5xl flex-col gap-4">
-        <header className="flex flex-col gap-3 rounded-lg border border-ink/10 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <button type="button" onClick={handleLeaveRoom} className="text-sm font-bold text-palm">
-              ChitraGuess
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fff3cf,transparent_34%),linear-gradient(180deg,#fffaf1_0%,#f7efe1_100%)] px-3 py-3 pb-28 text-ink sm:px-5 sm:py-5 lg:pb-8">
+      <section className="mx-auto flex w-full max-w-7xl flex-col gap-3 lg:gap-4">
+        <header className="sticky top-2 z-40 rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5 backdrop-blur sm:p-4">
+          <div className="flex items-center justify-between gap-3">
+            <button type="button" onClick={handleLeaveRoom} className="text-left">
+              <span className="block text-sm font-black text-palm">ChitraGuess</span>
+              <span className="block text-2xl font-black tracking-normal sm:text-3xl">Room {code}</span>
             </button>
-            <h1 className="mt-1 text-3xl font-black tracking-normal">Room {code}</h1>
-            <p className="text-sm font-semibold text-ink/60">{status}</p>
-          </div>
-          <div className="grid gap-2 sm:flex sm:items-center">
-            <button
-              type="button"
-              onClick={() => {
-                setErrorMessage("");
-                setIsSettingsOpen(true);
-              }}
-              title={settingsLocked ? "Settings locked after game starts" : "Room settings"}
-              aria-label="Room settings"
-              className="inline-flex h-12 w-12 items-center justify-center rounded-md border border-ink/15 bg-white text-ink shadow-sm transition active:scale-[0.99]"
-            >
-              <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M10.5 3.75h3l.55 2.2a6.9 6.9 0 0 1 1.45.6l1.95-1.17 2.12 2.12-1.17 1.95c.25.46.45.94.6 1.45l2.25.6v3l-2.25.55a6.9 6.9 0 0 1-.6 1.45l1.17 1.95-2.12 2.12-1.95-1.17c-.46.25-.94.45-1.45.6l-.55 2.25h-3l-.6-2.25a6.9 6.9 0 0 1-1.45-.6l-1.95 1.17-2.12-2.12 1.17-1.95a6.9 6.9 0 0 1-.6-1.45L2.75 14.5v-3l2.2-.6c.15-.51.35-.99.6-1.45L4.38 7.5 6.5 5.38l1.95 1.17c.46-.25.94-.45 1.45-.6l.6-2.2Z"
-                />
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z" />
-              </svg>
-            </button>
-            {canStartGame ? (
+
+            <div className="flex items-center gap-2">
+              <div className="rounded-md bg-ink px-3 py-2 text-center text-white shadow-sm">
+                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-white/70">⏱️ Timer</p>
+                <p className="text-xl font-black leading-none">
+                  {gameState?.hasActiveRound && !gameState.isChoosingWord ? `${gameState.secondsRemaining}s` : "--"}
+                </p>
+              </div>
               <button
                 type="button"
-                onClick={handleStartGame}
-                className="rounded-md bg-palm px-4 py-3 text-base font-black text-white shadow-sm transition active:scale-[0.99]"
+                onClick={() => {
+                  setErrorMessage("");
+                  setIsSettingsOpen(true);
+                }}
+                title={settingsLocked ? "Settings locked after game starts" : "Room settings"}
+                aria-label="Room settings"
+                className="inline-flex h-12 w-12 items-center justify-center rounded-md border border-ink/15 bg-white text-ink shadow-sm transition active:scale-[0.98]"
               >
-                {gameState?.gameOver ? "Play Again" : "Start Game"}
+                <span aria-hidden="true" className="text-xl">⚙️</span>
+                <svg aria-hidden="true" className="hidden h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M10.5 3.75h3l.55 2.2a6.9 6.9 0 0 1 1.45.6l1.95-1.17 2.12 2.12-1.17 1.95c.25.46.45.94.6 1.45l2.25.6v3l-2.25.55a6.9 6.9 0 0 1-.6 1.45l1.17 1.95-2.12 2.12-1.95-1.17c-.46.25-.94.45-1.45.6l-.55 2.25h-3l-.6-2.25a6.9 6.9 0 0 1-1.45-.6l-1.95 1.17-2.12-2.12 1.17-1.95a6.9 6.9 0 0 1-.6-1.45L2.75 14.5v-3l2.2-.6c.15-.51.35-.99.6-1.45L4.38 7.5 6.5 5.38l1.95 1.17c.46-.25.94-.45 1.45-.6l.6-2.2Z"
+                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6Z" />
+                </svg>
               </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={handleLeaveRoom}
-              className="rounded-md border border-ink/15 bg-white px-4 py-3 text-base font-black text-ink shadow-sm transition active:scale-[0.99]"
-            >
-              Back to Home
-            </button>
-            <button
-              type="button"
-              onClick={handleClearCanvas}
-              className="rounded-md bg-marigold px-4 py-3 text-base font-black text-ink shadow-sm transition active:scale-[0.99]"
-            >
-              Clear Canvas
-            </button>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-2 sm:flex sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-palm/10 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-palm">
+                {phaseLabel}
+              </span>
+              <span className="rounded-full bg-marigold/25 px-3 py-1 text-xs font-black text-ink">
+                {settings.language} · {settings.category}
+              </span>
+              <span className="text-xs font-bold text-ink/55">{status}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:flex">
+              {canStartGame ? (
+                <button
+                  type="button"
+                  onClick={handleStartGame}
+                  className="rounded-md bg-palm px-4 py-2.5 text-sm font-black text-white shadow-sm transition hover:bg-palm/90 active:scale-[0.98]"
+                >
+                  {gameState?.gameOver ? "🏆 Play Again" : "🎨 Start Game"}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={handleLeaveRoom}
+                className="rounded-md border border-ink/15 bg-white px-4 py-2.5 text-sm font-black text-ink shadow-sm transition hover:border-ink/30 active:scale-[0.98]"
+              >
+                Back Home
+              </button>
+            </div>
           </div>
         </header>
 
+        {errorMessage ? (
+          <div
+            role="alert"
+            className="rounded-lg border border-marigold/60 bg-white px-4 py-3 text-sm font-black text-ink shadow-lg shadow-ink/5"
+          >
+            {errorMessage}
+          </div>
+        ) : null}
+
         {isSettingsOpen ? (
           <div className="fixed inset-0 z-50 flex items-end bg-ink/40 p-3 sm:items-center sm:justify-center">
-            <section className="w-full rounded-lg border border-ink/10 bg-white p-4 shadow-lg sm:max-w-2xl">
+            <section className="w-full rounded-lg border border-ink/10 bg-white p-4 shadow-xl sm:max-w-2xl">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-bold uppercase tracking-[0.16em] text-palm">Room settings</p>
@@ -394,9 +607,7 @@ export default function RoomClient({ code }: { code: string }) {
                       ))}
                     </select>
                   ) : (
-                    <span className="rounded-md border border-ink/10 bg-paper px-3 py-3 text-base text-ink">
-                      {settings.language}
-                    </span>
+                    <span className="rounded-md border border-ink/10 bg-paper px-3 py-3 text-base text-ink">{settings.language}</span>
                   )}
                 </label>
 
@@ -417,9 +628,7 @@ export default function RoomClient({ code }: { code: string }) {
                       ))}
                     </select>
                   ) : (
-                    <span className="rounded-md border border-ink/10 bg-paper px-3 py-3 text-base text-ink">
-                      {settings.rounds}
-                    </span>
+                    <span className="rounded-md border border-ink/10 bg-paper px-3 py-3 text-base text-ink">{settings.rounds}</span>
                   )}
                 </label>
 
@@ -466,9 +675,7 @@ export default function RoomClient({ code }: { code: string }) {
                       ))}
                     </select>
                   ) : (
-                    <span className="rounded-md border border-ink/10 bg-paper px-3 py-3 text-base text-ink">
-                      {settings.category}
-                    </span>
+                    <span className="rounded-md border border-ink/10 bg-paper px-3 py-3 text-base text-ink">{settings.category}</span>
                   )}
                 </label>
 
@@ -489,9 +696,7 @@ export default function RoomClient({ code }: { code: string }) {
                       ))}
                     </select>
                   ) : (
-                    <span className="rounded-md border border-ink/10 bg-paper px-3 py-3 text-base text-ink">
-                      {settings.difficulty}
-                    </span>
+                    <span className="rounded-md border border-ink/10 bg-paper px-3 py-3 text-base text-ink">{settings.difficulty}</span>
                   )}
                 </label>
               </div>
@@ -499,59 +704,47 @@ export default function RoomClient({ code }: { code: string }) {
           </div>
         ) : null}
 
-        <section className="grid gap-3 rounded-lg border border-ink/10 bg-white p-4 shadow-sm md:grid-cols-[1fr_1fr]">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-bold uppercase tracking-[0.16em] text-palm">
-                {gameState?.hasActiveRound ? "Current turn" : gameState?.gameOver ? "Game over" : "Ready"}
-              </p>
-              {gameState?.hasActiveRound ? (
-                <span className="rounded-full bg-ink px-3 py-1 text-sm font-black text-white">
-                  {gameState.isChoosingWord ? "Choosing" : `${gameState.secondsRemaining}s`}
-                </span>
-              ) : null}
+        <section className="rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5 sm:p-4">
+          <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-palm">సూపర్! Current game</p>
+              <h1 className="mt-1 text-2xl font-black tracking-normal sm:text-3xl">{statusTitle}</h1>
+              <p className="mt-1 text-sm font-bold text-ink/60">{roundSummary}</p>
             </div>
-            <h2 className="mt-1 text-2xl font-black">
-              {gameState?.hasActiveRound
-                ? gameState.isChoosingWord
-                  ? gameState.isDrawer
-                    ? "Choose your word"
-                    : "Waiting for drawer"
-                  : gameState.isDrawer
-                    ? "You are drawing"
-                    : `${gameState.drawerName} is drawing`
-                : gameState?.gameOver
-                  ? "Final scores are in"
-                  : `Start a ${settings.language} word round`}
-            </h2>
-            {gameState?.hasActiveRound ? (
-              <p className="mt-2 text-sm font-bold text-ink/60">
-                Round {gameState.currentRoundNumber} of {gameState.selectedRounds} · Turn{" "}
-                {gameState.currentTurnInRound} of {gameState.turnsPerRound}
-              </p>
-            ) : gameState?.gameOver ? (
-              <p className="mt-2 text-sm font-bold text-ink/60">
-                Completed {gameState.totalTurns} drawing turns.
-              </p>
-            ) : (
-              <p className="mt-2 text-sm font-bold text-ink/60">
-                Each player draws once per selected round.
-              </p>
-            )}
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-md bg-paper px-3 py-2">
+                <p className="text-[10px] font-black uppercase text-ink/50">Players</p>
+                <p className="text-xl font-black">{players.length}</p>
+              </div>
+              <div className="rounded-md bg-paper px-3 py-2">
+                <p className="text-[10px] font-black uppercase text-ink/50">Round</p>
+                <p className="text-xl font-black">{gameState?.currentRoundNumber || 0}/{settings.rounds}</p>
+              </div>
+              <div className="rounded-md bg-paper px-3 py-2">
+                <p className="text-[10px] font-black uppercase text-ink/50">Mode</p>
+                <p className="text-sm font-black leading-6">{settings.difficulty}</p>
+              </div>
+            </div>
           </div>
-          <div className="rounded-md bg-paper px-4 py-3">
-            {gameState?.hasActiveRound ? (
+
+          <div className="mt-3 rounded-md bg-paper px-4 py-3">
+            {gameState?.gamePaused ? (
+              <>
+                <p className="text-sm font-bold text-ink/60">Game paused</p>
+                <p className="mt-1 text-xl font-black">{gameState.pausedMessage ?? "Waiting for one more player to continue."}</p>
+              </>
+            ) : gameState?.hasActiveRound ? (
               gameState.isChoosingWord ? (
                 gameState.isDrawer ? (
                   <>
-                    <p className="text-sm font-bold text-ink/60">Pick one Telugu word to draw</p>
-                    <div className="mt-3 grid gap-2">
+                    <p className="text-sm font-bold text-ink/60">Ready to draw? Pick one {settings.language} word</p>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
                       {gameState.wordChoices.map((choice) => (
                         <button
                           key={choice.id}
                           type="button"
                           onClick={() => handleSelectWord(choice.id)}
-                          className="rounded-md border border-palm/30 bg-white px-4 py-3 text-left text-2xl font-black text-ink shadow-sm transition hover:border-palm active:scale-[0.99]"
+                          className="rounded-md border border-palm/30 bg-white px-4 py-3 text-left text-2xl font-black text-ink shadow-sm transition hover:border-palm hover:bg-palm/5 active:scale-[0.98]"
                         >
                           {choice.displayWord}
                         </button>
@@ -560,152 +753,278 @@ export default function RoomClient({ code }: { code: string }) {
                   </>
                 ) : (
                   <>
-                    <p className="text-sm font-bold text-ink/60">Waiting</p>
-                    <p className="mt-1 text-xl font-black">Waiting for drawer to choose a word</p>
+                    <p className="text-sm font-bold text-ink/60">Waiting for artist...</p>
+                    <p className="mt-1 text-xl font-black">The word is loading in their secret sketch brain.</p>
                   </>
                 )
               ) : gameState.isDrawer ? (
                 <>
-                  <p className="text-sm font-bold text-ink/60">Draw this Telugu word</p>
-                  <p className="mt-1 text-3xl font-black">{gameState.word?.displayWord}</p>
+                  <p className="text-sm font-bold text-ink/60">🎨 Draw this {settings.language} word</p>
+                  <p className="mt-1 text-4xl font-black tracking-normal">{gameState.word?.displayWord}</p>
                 </>
               ) : (
                 <>
                   <p className="text-sm font-bold text-ink/60">
-                    {gameState.hasGuessedCorrectly ? "You guessed correctly" : "Guess in English"}
+                    {gameState.hasGuessedCorrectly ? "బాగా గెస్ చేశావ్!" : "🔥 Guess fast!"}
                   </p>
-                  <p className="mt-1 break-words font-mono text-2xl font-black tracking-normal">
-                    {gameState.hasGuessedCorrectly ? "Correct!" : gameState.word?.hint}
+                  <p className="mt-1 break-words font-mono text-3xl font-black tracking-normal">
+                    {gameState.hasGuessedCorrectly ? "Nice guess!" : gameState.word?.hint}
                   </p>
+                  {!gameState.hasGuessedCorrectly && gameState.secondsRemaining <= 20 ? (
+                    <p className="mt-2 text-sm font-black text-palm">Almost there!</p>
+                  ) : null}
                 </>
               )
             ) : (
               <p className="text-base font-semibold text-ink/70">
                 {gameState?.gameOver
-                  ? "The host can start another match with a new round count."
-                  : "The host picks the number of rounds, then starts the game."}
+                  ? "అభినందనలు! The host can start another match when everyone is ready."
+                  : "Waiting for players. Ready to draw when at least two friends join."}
               </p>
             )}
           </div>
         </section>
 
-        <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-          <div className="rounded-lg border border-ink/10 bg-white p-2 shadow-sm">
-            {gameState?.gameOver && winner ? (
-              <section className="flex min-h-[360px] flex-col items-center justify-center rounded-md bg-paper px-4 py-10 text-center">
-                <div className="animate-[winnerScale_700ms_cubic-bezier(0.34,1.56,0.64,1)_both] rounded-lg border border-marigold/70 bg-white px-6 py-7 shadow-sm">
-                  <div className="mx-auto flex h-20 w-20 animate-bounce items-center justify-center rounded-full bg-marigold text-5xl">
-                    🏆
-                  </div>
-                  <p className="mt-5 text-sm font-black uppercase tracking-[0.18em] text-palm">Winner!</p>
-                  <h2 className="mt-2 text-4xl font-black tracking-normal text-ink">{winner.nickname}</h2>
-                  <p className="mt-2 text-lg font-bold text-ink/70">Final score: {winner.score}</p>
-                </div>
-
-                <div className="mt-6 grid w-full max-w-sm gap-2 sm:grid-cols-2">
-                  {gameState.isHost ? (
-                    <button
-                      type="button"
-                      onClick={handleStartGame}
-                      className="rounded-md bg-palm px-4 py-3 text-base font-black text-white shadow-sm transition active:scale-[0.99]"
-                    >
-                      Play Again
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={handleLeaveRoom}
-                    className="rounded-md border border-ink/15 bg-white px-4 py-3 text-base font-black text-ink shadow-sm transition active:scale-[0.99]"
-                  >
-                    Back to Home
-                  </button>
-                </div>
-              </section>
-            ) : (
-              <canvas
-                ref={canvasRef}
-                className={`h-[56vh] min-h-[360px] w-full touch-none rounded-md bg-white ${
-                  gameState?.hasActiveRound && (!gameState.isDrawer || gameState.isChoosingWord)
-                    ? "cursor-not-allowed"
-                    : "cursor-crosshair"
-                }`}
-                onPointerDown={startDrawing}
-                onPointerMove={draw}
-                onPointerUp={stopDrawing}
-                onPointerCancel={stopDrawing}
-                onPointerLeave={stopDrawing}
-              />
-            )}
-          </div>
-
-          <aside className="grid gap-4">
-            <div className="rounded-lg border border-ink/10 bg-white p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-lg font-black">Scoreboard</h2>
-                <span className="rounded-full bg-palm/10 px-3 py-1 text-sm font-black text-palm">
-                  {players.length}
-                </span>
-              </div>
-              <ul className="mt-4 grid gap-2">
-                {(gameState?.scoreboard.length ? gameState.scoreboard : players.map((player) => ({ ...player, score: 0 }))).map(
-                  (player) => (
+        <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)_320px] lg:items-start">
+          <section className="order-2 rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5 lg:order-1">
+            <details open className="group">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+                <h2 className="text-lg font-black">🏆 Scoreboard</h2>
+                <span className="rounded-full bg-palm/10 px-3 py-1 text-sm font-black text-palm">{players.length}</span>
+              </summary>
+              <ul className="mt-3 grid gap-2">
+                {scoreboardEntries.length ? (
+                  scoreboardEntries.map((player, index) => (
                     <li
                       key={player.id}
-                      className="flex items-center justify-between gap-3 rounded-md border border-ink/10 px-3 py-2 font-semibold"
+                      className="flex items-center justify-between gap-3 rounded-md border border-ink/10 bg-white px-3 py-2 font-semibold"
                     >
-                      <span>{player.nickname}</span>
-                      <span className="font-black">{player.score}</span>
+                      <span className="min-w-0 truncate">
+                        <span className="mr-2 text-ink/40">#{index + 1}</span>
+                        {player.nickname}
+                      </span>
+                      <span className="rounded-full bg-marigold/30 px-2 py-1 text-sm font-black">{player.score}</span>
                     </li>
-                  )
+                  ))
+                ) : (
+                  <li className="rounded-md bg-paper px-3 py-3 text-sm font-bold text-ink/60">Waiting for players to join.</li>
                 )}
               </ul>
+            </details>
+          </section>
+
+          <section className="order-1 grid gap-3 lg:order-2">
+            <div className="rounded-lg border border-ink/10 bg-white p-2 shadow-lg shadow-ink/5">
+              {gameState?.gameOver && winner ? (
+                <section className="flex min-h-[360px] flex-col items-center justify-center rounded-md bg-paper px-4 py-10 text-center sm:min-h-[460px]">
+                  <div className="animate-[winnerScale_700ms_cubic-bezier(0.34,1.56,0.64,1)_both] rounded-lg border border-marigold/70 bg-white px-6 py-7 shadow-sm">
+                    <div className="mx-auto flex h-20 w-20 animate-bounce items-center justify-center rounded-full bg-marigold text-5xl">
+                      🏆
+                    </div>
+                    <p className="mt-5 text-sm font-black uppercase tracking-[0.18em] text-palm">Champion!</p>
+                    <h2 className="mt-2 text-4xl font-black tracking-normal text-ink">{winner.nickname}</h2>
+                    <p className="mt-2 text-2xl font-black text-palm">అభినందనలు!</p>
+                    <p className="mt-2 text-lg font-bold text-ink/70">Final score: {winner.score}</p>
+                  </div>
+
+                  <div className="mt-6 grid w-full max-w-sm gap-2 sm:grid-cols-2">
+                    {gameState.isHost ? (
+                      <button
+                        type="button"
+                        onClick={handleStartGame}
+                        className="rounded-md bg-palm px-4 py-3 text-base font-black text-white shadow-sm transition hover:bg-palm/90 active:scale-[0.98]"
+                      >
+                        🎨 Play Again
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={handleLeaveRoom}
+                      className="rounded-md border border-ink/15 bg-white px-4 py-3 text-base font-black text-ink shadow-sm transition hover:border-ink/30 active:scale-[0.98]"
+                    >
+                      Back to Home
+                    </button>
+                  </div>
+                </section>
+              ) : (
+                <canvas
+                  ref={canvasRef}
+                  className={`h-[48vh] min-h-[330px] w-full touch-none rounded-md bg-white shadow-inner sm:h-[58vh] sm:min-h-[440px] lg:h-[62vh] ${
+                    gameState?.gameStarted && !canDraw ? "cursor-not-allowed" : "cursor-crosshair"
+                  }`}
+                  onPointerDown={startDrawing}
+                  onPointerMove={draw}
+                  onPointerUp={stopDrawing}
+                  onPointerCancel={stopDrawing}
+                  onPointerLeave={stopDrawing}
+                />
+              )}
             </div>
 
-            <div className="rounded-lg border border-ink/10 bg-white p-4 shadow-sm">
-              <h2 className="text-lg font-black">Guesses</h2>
-              <div className="mt-3 grid max-h-48 gap-2 overflow-y-auto rounded-md bg-paper p-3">
+            <section className="rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-black text-ink/60">Tools</span>
+                {TOOL_COLORS.map((color) => (
+                  <button
+                    key={color.value}
+                    type="button"
+                    disabled={!canDraw}
+                    onClick={() => {
+                      setPenColor(color.value);
+                      setActiveTool("brush");
+                    }}
+                    aria-label={`Use ${color.name}`}
+                    className={`h-9 w-9 rounded-full border-2 shadow-sm transition hover:scale-105 active:scale-95 ${
+                      penColor === color.value && activeTool === "brush" ? "border-ink" : "border-white"
+                    } disabled:cursor-not-allowed disabled:opacity-40`}
+                    style={{ backgroundColor: color.value }}
+                  />
+                ))}
+                <button
+                  type="button"
+                  disabled={!canDraw}
+                  onClick={() => setActiveTool((tool) => (tool === "eraser" ? "brush" : "eraser"))}
+                  className={`rounded-md px-3 py-2 text-sm font-black shadow-sm transition hover:border-ink/30 active:scale-[0.98] ${
+                    activeTool === "eraser" ? "bg-ink text-white" : "border border-ink/15 bg-white text-ink"
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  Eraser
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUndoStroke}
+                  disabled={!canDraw}
+                  className="rounded-md border border-ink/15 bg-white px-3 py-2 text-sm font-black text-ink shadow-sm transition hover:border-ink/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Undo
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearCanvas}
+                  disabled={!canClearCanvas}
+                  className="rounded-md bg-marigold px-3 py-2 text-sm font-black text-ink shadow-sm transition hover:bg-marigold/85 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-ink/15"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-sm font-black text-ink/60">Brush size</span>
+                {BRUSH_SIZES.map((size) => (
+                  <button
+                    key={size.value}
+                    type="button"
+                    disabled={!canDraw}
+                    onClick={() => setBrushSize(size.value)}
+                    className={`min-h-10 rounded-md px-3 py-2 text-sm font-black shadow-sm transition active:scale-[0.98] ${
+                      brushSize === size.value
+                        ? "bg-palm text-white"
+                        : "border border-ink/15 bg-white text-ink hover:border-ink/30"
+                    } disabled:cursor-not-allowed disabled:opacity-40`}
+                  >
+                    {size.label}
+                  </button>
+                ))}
+              </div>
+              {!canDraw && gameState?.gameStarted && !gameState?.gameOver ? (
+                <p className="mt-2 text-sm font-bold text-ink/55">Only the current drawer can use the canvas.</p>
+              ) : null}
+            </section>
+          </section>
+
+          <aside className="order-3 rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5">
+            <h2 className="text-lg font-black">🔥 Guesses</h2>
+            <div className="relative mt-3">
+              <div
+                ref={messagesContainerRef}
+                onScroll={handleMessagesScroll}
+                className="grid h-56 content-start gap-2 overflow-y-auto rounded-md bg-paper p-3 scroll-smooth lg:h-[52vh]"
+              >
                 {gameState?.messages.length ? (
                   gameState.messages.map((message) => (
                     <p
                       key={message.id}
-                      className={`text-sm font-semibold ${
-                        message.type === "correct" ? "text-palm" : message.type === "guess" ? "text-ink" : "text-ink/60"
+                      className={`rounded-md px-2 py-1 text-sm font-semibold ${
+                        message.type === "correct"
+                          ? "bg-palm/10 text-palm"
+                          : message.type === "guess"
+                            ? "bg-white text-ink"
+                            : "text-ink/60"
                       }`}
                     >
-                      {message.text}
+                      {message.type === "correct" ? `${message.text} సూపర్!` : message.text}
                     </p>
                   ))
                 ) : (
-                  <p className="text-sm font-semibold text-ink/60">No guesses yet.</p>
+                  <p className="rounded-md bg-white px-3 py-3 text-sm font-bold text-ink/60">No guesses yet.</p>
                 )}
               </div>
+              {hasNewMessages ? (
+                <button
+                  type="button"
+                  onClick={() => scrollMessagesToBottom()}
+                  className="absolute bottom-3 left-1/2 min-h-10 -translate-x-1/2 rounded-full bg-ink px-4 py-2 text-sm font-black text-white shadow-lg transition hover:bg-ink/90 active:scale-[0.98]"
+                >
+                  New messages
+                </button>
+              ) : null}
+            </div>
 
-              <form className="mt-3 grid gap-2" onSubmit={handleSubmitGuess}>
-                <input
-                  value={guess}
-                  onChange={(event) => setGuess(event.target.value)}
-                  disabled={!canGuess}
-                  maxLength={60}
-                  placeholder={
-                    gameState?.isChoosingWord
+            <form className="mt-3 hidden gap-2 lg:grid" onSubmit={handleSubmitGuess}>
+              <input
+                value={guess}
+                onChange={(event) => setGuess(event.target.value)}
+                disabled={!canGuess}
+                maxLength={60}
+                placeholder={
+                  gameState?.gamePaused
+                    ? "Waiting for players"
+                    : gameState?.isChoosingWord
                       ? "Waiting for word"
                       : gameState?.isDrawer
                         ? "Drawer cannot guess"
                         : "Type English answer"
-                  }
-                  className="w-full rounded-md border border-ink/15 bg-white px-4 py-3 text-base outline-none ring-palm/25 transition focus:border-palm focus:ring-4 disabled:cursor-not-allowed disabled:bg-ink/5"
-                />
-                <button
-                  type="submit"
-                  disabled={!canGuess || !guess.trim()}
-                  className="rounded-md bg-ink px-4 py-3 text-base font-black text-white shadow-sm transition active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-ink/25"
-                >
-                  Send Guess
-                </button>
-              </form>
-            </div>
+                }
+                className="w-full rounded-md border border-ink/15 bg-white px-4 py-3 text-base outline-none ring-palm/25 transition hover:border-ink/30 focus:border-palm focus:ring-4 disabled:cursor-not-allowed disabled:bg-ink/5"
+              />
+              <button
+                type="submit"
+                disabled={!canGuess || !guess.trim()}
+                className="rounded-md bg-ink px-4 py-3 text-base font-black text-white shadow-sm transition hover:bg-ink/90 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-ink/25"
+              >
+                Guess fast!
+              </button>
+            </form>
           </aside>
         </div>
+
+        <form
+          className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-[1fr_auto] gap-2 border-t border-ink/10 bg-white/95 p-3 shadow-[0_-10px_30px_rgba(29,37,48,0.12)] backdrop-blur lg:hidden"
+          onSubmit={handleSubmitGuess}
+        >
+          <input
+            value={guess}
+            onChange={(event) => setGuess(event.target.value)}
+            disabled={!canGuess}
+            maxLength={60}
+            placeholder={
+              gameState?.gamePaused
+                ? "Waiting for players"
+                : gameState?.isChoosingWord
+                  ? "Waiting for word"
+                  : gameState?.isDrawer
+                    ? "Drawer cannot guess"
+                    : "Type English answer"
+            }
+            className="min-w-0 rounded-md border border-ink/15 bg-white px-4 py-3 text-base outline-none ring-palm/25 transition hover:border-ink/30 focus:border-palm focus:ring-4 disabled:cursor-not-allowed disabled:bg-ink/5"
+          />
+          <button
+            type="submit"
+            disabled={!canGuess || !guess.trim()}
+            className="rounded-md bg-ink px-4 py-3 text-base font-black text-white shadow-sm transition hover:bg-ink/90 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-ink/25"
+          >
+            Guess
+          </button>
+        </form>
       </section>
     </main>
   );
