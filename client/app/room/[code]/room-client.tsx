@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import confetti from "canvas-confetti";
 import { useRouter, useSearchParams } from "next/navigation";
 import { GameState, getSocket, Player, Point, RoomSettings, StrokePayload } from "@/app/lib/socket";
+import SketchItLogo from "@/app/components/sketchit-logo";
 
 const DEFAULT_PEN_COLOR = "#1d2530";
 const DEFAULT_BRUSH_SIZE = 6;
@@ -449,6 +450,15 @@ export default function RoomClient({ code }: { code: string }) {
     router.push("/");
   }
 
+  async function handleCopyRoomCode() {
+    try {
+      await navigator.clipboard.writeText(code);
+      setErrorMessage("Room code copied!");
+    } catch {
+      setErrorMessage("Could not copy room code. Please copy it manually.");
+    }
+  }
+
   const canGuess =
     Boolean(gameState?.hasActiveRound) &&
     !gameState?.isChoosingWord &&
@@ -513,10 +523,29 @@ export default function RoomClient({ code }: { code: string }) {
       <section className="mx-auto flex w-full max-w-7xl flex-col gap-3 lg:gap-4">
         <header className="relative z-30 rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5 backdrop-blur sm:p-4 lg:sticky lg:top-3 lg:z-40">
           <div className="flex items-center justify-between gap-3">
-            <button type="button" onClick={handleLeaveRoom} className="text-left">
-              <span className="block text-sm font-black text-palm">SketchIt</span>
-              <span className="block text-2xl font-black tracking-normal sm:text-3xl">Room {code}</span>
+            <button type="button" onClick={handleLeaveRoom} className="min-w-0 text-left">
+              <span className="inline-flex rounded-lg bg-ink p-1 shadow-sm">
+                <SketchItLogo className="rounded-md" />
+              </span>
             </button>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-black uppercase tracking-[0.14em] text-ink/50">Room code</p>
+              <div className="mt-1 flex min-w-0 items-center gap-2">
+                <span className="min-w-0 truncate text-2xl font-black tracking-normal sm:text-3xl">{code}</span>
+                <button
+                  type="button"
+                  onClick={handleCopyRoomCode}
+                  aria-label={`Copy room code ${code}`}
+                  className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-md border border-ink/15 bg-white px-3 py-2 text-sm font-black text-ink shadow-sm transition hover:border-ink/30 active:scale-[0.98]"
+                >
+                  <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 8h10v12H8z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                  <span className="hidden sm:inline">Copy</span>
+                </button>
+              </div>
+            </div>
 
             <div className="flex items-center gap-2">
               <button

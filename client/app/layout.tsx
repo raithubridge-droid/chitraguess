@@ -3,7 +3,10 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "SketchIt",
-  description: "Draw Telugu. Guess Fast."
+  description: "Draw. Guess. Have Fun!",
+  icons: {
+    icon: "/sketchit-logo.jpg"
+  }
 };
 
 export default function RootLayout({

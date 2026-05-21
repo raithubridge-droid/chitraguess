@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import SketchItLogo from "./components/sketchit-logo";
 
 const STORAGE_KEYS = ["chitraguess:nickname", "chitraguess:roomCode"];
 
@@ -49,14 +50,15 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_15%_10%,#ffe9a8,transparent_30%),linear-gradient(180deg,#fffaf1_0%,#f7efe1_100%)] px-4 py-6 text-ink sm:px-6">
-      <section className="mx-auto grid min-h-[calc(100vh-3rem)] w-full max-w-5xl items-center gap-6 lg:grid-cols-[1fr_440px]">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_15%_10%,#ffe9a8,transparent_30%),linear-gradient(180deg,#fffaf1_0%,#f7efe1_100%)] px-4 py-5 text-ink sm:px-6">
+      <section className="mx-auto grid min-h-[calc(100vh-3rem)] w-full max-w-5xl items-center gap-6 py-4 lg:grid-cols-[1fr_440px]">
         <div className="py-8">
           <p className="mb-3 inline-flex rounded-full bg-palm/10 px-3 py-1 text-sm font-black uppercase tracking-[0.16em] text-palm">
             Telugu friends game
           </p>
-          <h1 className="text-5xl font-black tracking-normal text-ink sm:text-7xl">SketchIt</h1>
-          <p className="mt-3 text-2xl font-black text-ink/80">Draw Telugu. Guess Fast.</p>
+          <div className="rounded-[1.25rem] border border-ink/10 bg-white p-3 shadow-xl shadow-ink/10 sm:rounded-[1.5rem] sm:p-5">
+            <SketchItLogo size="hero" />
+          </div>
           <p className="mt-5 max-w-xl text-base font-semibold leading-7 text-ink/65">
             Ready to draw? Create a room, call your friends, and race through funny sketches, Telugu words, and fast guesses.
           </p>
