@@ -105,6 +105,31 @@ function upsertStroke(strokes: StrokePayload[], stroke: StrokePayload) {
   return [...strokes, stroke];
 }
 
+function HintTiles({ hint }: { hint: string }) {
+  const hintParts = hint.split(" ");
+
+  return (
+    <div className="mt-3 flex max-w-full flex-wrap items-center gap-1.5 sm:gap-2" aria-label={`Hint: ${hint}`}>
+      {hintParts.map((part, index) =>
+        part === "" ? (
+          <span key={`${hint}-${index}`} className="w-3" aria-hidden="true" />
+        ) : (
+          <span
+            key={`${hint}-${index}`}
+            className={`inline-flex h-10 min-w-8 items-center justify-center rounded-md border px-2 font-mono text-xl font-black uppercase shadow-sm sm:h-12 sm:min-w-10 sm:text-2xl ${
+              part === "_"
+                ? "border-ink/10 bg-white text-ink/35"
+                : "animate-[hintReveal_360ms_ease-out_both] border-palm/25 bg-palm/10 text-palm"
+            }`}
+          >
+            {part}
+          </span>
+        )
+      )}
+    </div>
+  );
+}
+
 export default function RoomClient({ code }: { code: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -438,6 +463,7 @@ export default function RoomClient({ code }: { code: string }) {
   const settings = gameState?.settings ?? DEFAULT_SETTINGS;
   const settingsLocked = Boolean(gameState?.gameStarted || gameState?.gameOver);
   const canEditSettings = Boolean(gameState?.isHost && !settingsLocked);
+  const showMobileGuessBar = Boolean(gameState?.gameStarted && !gameState.gameOver && !gameState.isDrawer);
   const winner = gameState?.scoreboard.reduce((topPlayer, player) => {
     if (!topPlayer || player.score > topPlayer.score) {
       return player;
@@ -479,9 +505,13 @@ export default function RoomClient({ code }: { code: string }) {
         : "Guess fast! Each player draws once per selected round.";
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#fff3cf,transparent_34%),linear-gradient(180deg,#fffaf1_0%,#f7efe1_100%)] px-3 py-3 pb-28 text-ink sm:px-5 sm:py-5 lg:pb-8">
+    <main
+      className={`min-h-screen bg-[radial-gradient(circle_at_top_left,#fff3cf,transparent_34%),linear-gradient(180deg,#fffaf1_0%,#f7efe1_100%)] px-3 py-3 text-ink sm:px-5 sm:py-5 lg:pb-8 ${
+        showMobileGuessBar ? "pb-28" : "pb-5"
+      }`}
+    >
       <section className="mx-auto flex w-full max-w-7xl flex-col gap-3 lg:gap-4">
-        <header className="sticky top-2 z-40 rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5 backdrop-blur sm:p-4">
+        <header className="relative z-30 rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5 backdrop-blur sm:p-4 lg:sticky lg:top-3 lg:z-40">
           <div className="flex items-center justify-between gap-3">
             <button type="button" onClick={handleLeaveRoom} className="text-left">
               <span className="block text-sm font-black text-palm">SketchIt</span>
@@ -489,12 +519,6 @@ export default function RoomClient({ code }: { code: string }) {
             </button>
 
             <div className="flex items-center gap-2">
-              <div className="rounded-md bg-ink px-3 py-2 text-center text-white shadow-sm">
-                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-white/70">⏱️ Timer</p>
-                <p className="text-xl font-black leading-none">
-                  {gameState?.hasActiveRound && !gameState.isChoosingWord ? `${gameState.secondsRemaining}s` : "--"}
-                </p>
-              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -705,11 +729,19 @@ export default function RoomClient({ code }: { code: string }) {
         ) : null}
 
         <section className="rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5 sm:p-4">
-          <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
-            <div>
-              <p className="text-xs font-black uppercase tracking-[0.14em] text-palm">సూపర్! Current game</p>
-              <h1 className="mt-1 text-2xl font-black tracking-normal sm:text-3xl">{statusTitle}</h1>
-              <p className="mt-1 text-sm font-bold text-ink/60">{roundSummary}</p>
+          <div className="grid gap-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-black uppercase tracking-[0.14em] text-palm">సూపర్! Current game</p>
+                <h1 className="mt-1 text-2xl font-black tracking-normal sm:text-3xl">{statusTitle}</h1>
+                <p className="mt-1 text-sm font-bold text-ink/60">{roundSummary}</p>
+              </div>
+              <div className="w-28 shrink-0 rounded-md bg-ink px-3 py-2 text-center text-white shadow-sm sm:w-32 sm:py-3">
+                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-white/70">⏱️ Timer</p>
+                <p className="text-xl font-black leading-none sm:text-2xl">
+                  {gameState?.hasActiveRound && !gameState.isChoosingWord ? `${gameState.secondsRemaining}s` : "--"}
+                </p>
+              </div>
             </div>
             <div className="grid grid-cols-3 gap-2 text-center">
               <div className="rounded-md bg-paper px-3 py-2">
@@ -767,9 +799,16 @@ export default function RoomClient({ code }: { code: string }) {
                   <p className="text-sm font-bold text-ink/60">
                     {gameState.hasGuessedCorrectly ? "బాగా గెస్ చేశావ్!" : "🔥 Guess fast!"}
                   </p>
-                  <p className="mt-1 break-words font-mono text-3xl font-black tracking-normal">
-                    {gameState.hasGuessedCorrectly ? "Nice guess!" : gameState.word?.hint}
-                  </p>
+                  {gameState.hasGuessedCorrectly ? (
+                    <p className="mt-1 text-3xl font-black tracking-normal text-palm">Nice guess!</p>
+                  ) : gameState.word?.hint ? (
+                    <>
+                      <HintTiles hint={gameState.word.hint} />
+                      <p className="mt-2 text-xs font-black uppercase tracking-[0.08em] text-ink/45">
+                        More letters reveal every 30 seconds
+                      </p>
+                    </>
+                  ) : null}
                   {!gameState.hasGuessedCorrectly && gameState.secondsRemaining <= 20 ? (
                     <p className="mt-2 text-sm font-black text-palm">Almost there!</p>
                   ) : null}
@@ -997,34 +1036,34 @@ export default function RoomClient({ code }: { code: string }) {
           </aside>
         </div>
 
-        <form
-          className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-[1fr_auto] gap-2 border-t border-ink/10 bg-white/95 p-3 shadow-[0_-10px_30px_rgba(29,37,48,0.12)] backdrop-blur lg:hidden"
-          onSubmit={handleSubmitGuess}
-        >
-          <input
-            value={guess}
-            onChange={(event) => setGuess(event.target.value)}
-            disabled={!canGuess}
-            maxLength={60}
-            placeholder={
-              gameState?.gamePaused
-                ? "Waiting for players"
-                : gameState?.isChoosingWord
-                  ? "Waiting for word"
-                  : gameState?.isDrawer
-                    ? "Drawer cannot guess"
-                    : "Type English answer"
-            }
-            className="min-w-0 rounded-md border border-ink/15 bg-white px-4 py-3 text-base outline-none ring-palm/25 transition hover:border-ink/30 focus:border-palm focus:ring-4 disabled:cursor-not-allowed disabled:bg-ink/5"
-          />
-          <button
-            type="submit"
-            disabled={!canGuess || !guess.trim()}
-            className="rounded-md bg-ink px-4 py-3 text-base font-black text-white shadow-sm transition hover:bg-ink/90 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-ink/25"
+        {showMobileGuessBar ? (
+          <form
+            className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-[1fr_auto] gap-2 border-t border-ink/10 bg-white/95 p-3 shadow-[0_-10px_30px_rgba(29,37,48,0.12)] backdrop-blur lg:hidden"
+            onSubmit={handleSubmitGuess}
           >
-            Guess
-          </button>
-        </form>
+            <input
+              value={guess}
+              onChange={(event) => setGuess(event.target.value)}
+              disabled={!canGuess}
+              maxLength={60}
+              placeholder={
+                gameState?.gamePaused
+                  ? "Waiting for players"
+                  : gameState?.isChoosingWord
+                    ? "Waiting for word"
+                    : "Type English answer"
+              }
+              className="min-w-0 rounded-md border border-ink/15 bg-white px-4 py-3 text-base outline-none ring-palm/25 transition hover:border-ink/30 focus:border-palm focus:ring-4 disabled:cursor-not-allowed disabled:bg-ink/5"
+            />
+            <button
+              type="submit"
+              disabled={!canGuess || !guess.trim()}
+              className="rounded-md bg-ink px-4 py-3 text-base font-black text-white shadow-sm transition hover:bg-ink/90 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-ink/25"
+            >
+              Guess
+            </button>
+          </form>
+        ) : null}
       </section>
     </main>
   );

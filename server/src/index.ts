@@ -48,8 +48,10 @@ type RoomState = {
     word: TeluguWord | null;
     wordChoices: TeluguWord[];
     hintRevealIndexes: number[];
+    revealedCount: number;
     strokes: StrokePayload[];
     correctGuessers: Set<string>;
+    startedAt: number | null;
     endsAt: number | null;
   } | null;
 };
@@ -250,7 +252,7 @@ function randomWordChoices(settings: RoomSettings) {
   return choices;
 }
 
-function revealCountForAnswer(answer: string) {
+function maxRevealCountForAnswer(answer: string) {
   if (!answer.trim()) {
     return 0;
   }
@@ -276,7 +278,7 @@ function makeHintRevealIndexes(answer: string) {
     .split("")
     .map((character, index) => (/[a-z0-9]/i.test(character) ? index : null))
     .filter((index): index is number => index !== null);
-  const revealCount = Math.min(revealCountForAnswer(answer), Math.max(0, candidateIndexes.length - 1));
+  const revealCount = Math.min(maxRevealCountForAnswer(answer), Math.max(0, candidateIndexes.length - 1));
 
   return [...candidateIndexes]
     .sort(() => Math.random() - 0.5)
@@ -284,8 +286,26 @@ function makeHintRevealIndexes(answer: string) {
     .sort((left, right) => left - right);
 }
 
-function makeHint(answer: string, revealIndexes: number[]) {
-  const revealIndexSet = new Set(revealIndexes);
+function revealCountForElapsedSeconds(answer: string, elapsedSeconds: number) {
+  const maxRevealCount = maxRevealCountForAnswer(answer);
+  if (elapsedSeconds >= 90) {
+    return Math.min(maxRevealCount, 3);
+  }
+
+  if (elapsedSeconds >= 60) {
+    return Math.min(maxRevealCount, 2);
+  }
+
+  if (elapsedSeconds >= 30) {
+    return Math.min(maxRevealCount, 1);
+  }
+
+  return 0;
+}
+
+function makeHint(answer: string, revealIndexes: number[], revealedCount: number) {
+  const visibleRevealIndexes = revealIndexes.slice(0, revealedCount);
+  const revealIndexSet = new Set(visibleRevealIndexes);
   return answer
     .split("")
     .map((character, index) => {
@@ -312,6 +332,29 @@ function secondsRemaining(room: RoomState) {
   }
 
   return Math.max(0, Math.ceil((room.currentRound.endsAt - Date.now()) / 1000));
+}
+
+function elapsedSeconds(room: RoomState) {
+  if (!room.currentRound?.startedAt) {
+    return 0;
+  }
+
+  return Math.max(0, Math.floor((Date.now() - room.currentRound.startedAt) / 1000));
+}
+
+function updateHintRevealCount(room: RoomState) {
+  const round = room.currentRound;
+  if (!round?.word) {
+    return null;
+  }
+
+  const nextRevealCount = revealCountForElapsedSeconds(round.word.answer, elapsedSeconds(room));
+  if (nextRevealCount === round.revealedCount) {
+    return null;
+  }
+
+  round.revealedCount = nextRevealCount;
+  return nextRevealCount;
 }
 
 function pointsForCorrectGuess(room: RoomState) {
@@ -376,7 +419,7 @@ function gameStateForSocket(room: RoomState, socketId: string) {
     word: round
       ? {
           displayWord: isDrawer && selectedWord ? selectedWord.displayWord : null,
-          hint: !isDrawer && selectedWord ? makeHint(selectedWord.answer, round.hintRevealIndexes) : null
+          hint: !isDrawer && selectedWord ? makeHint(selectedWord.answer, round.hintRevealIndexes, round.revealedCount) : null
         }
       : null,
     wordChoices: isDrawer && round ? round.wordChoices.map(publicWordChoice) : [],
@@ -508,8 +551,10 @@ function startNextTurn(code: string, room: RoomState, reason?: string) {
     word: null,
     wordChoices: randomWordChoices(room.settings),
     hintRevealIndexes: [],
+    revealedCount: 0,
     strokes: [],
     correctGuessers: new Set<string>(),
+    startedAt: null,
     endsAt: null
   };
   room.messages.push(makeMessage(`${drawer.nickname} is choosing a word.`));
@@ -529,7 +574,9 @@ function startRoundTimer(code: string, room: RoomState) {
   }
 
   clearRoundTimer(room);
-  room.currentRound.endsAt = Date.now() + room.settings.roundDurationSeconds * 1000;
+  room.currentRound.startedAt = Date.now();
+  room.currentRound.endsAt = room.currentRound.startedAt + room.settings.roundDurationSeconds * 1000;
+  room.currentRound.revealedCount = 0;
   const drawer = room.players.get(room.currentRound.drawerId);
   room.messages.push(makeMessage(`${drawer?.nickname ?? "Drawer"} is drawing now.`));
   logRoom(code, "Round timer started", {
@@ -550,6 +597,11 @@ function startRoundTimer(code: string, room: RoomState) {
       return;
     }
 
+    const revealedCount = updateHintRevealCount(latestRoom);
+    if (revealedCount) {
+      const letterLabel = revealedCount === 1 ? "letter" : "letters";
+      latestRoom.messages.push(makeMessage(`Hint unlocked! ${revealedCount} ${letterLabel} revealed`));
+    }
     emitGameState(code);
   }, 1000);
 }
