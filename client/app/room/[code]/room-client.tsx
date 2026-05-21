@@ -484,7 +484,7 @@ export default function RoomClient({ code }: { code: string }) {
         <header className="sticky top-2 z-40 rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5 backdrop-blur sm:p-4">
           <div className="flex items-center justify-between gap-3">
             <button type="button" onClick={handleLeaveRoom} className="text-left">
-              <span className="block text-sm font-black text-palm">ChitraGuess</span>
+              <span className="block text-sm font-black text-palm">SketchIt</span>
               <span className="block text-2xl font-black tracking-normal sm:text-3xl">Room {code}</span>
             </button>
 

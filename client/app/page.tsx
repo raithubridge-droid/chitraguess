@@ -55,7 +55,7 @@ export default function Home() {
           <p className="mb-3 inline-flex rounded-full bg-palm/10 px-3 py-1 text-sm font-black uppercase tracking-[0.16em] text-palm">
             Telugu friends game
           </p>
-          <h1 className="text-5xl font-black tracking-normal text-ink sm:text-7xl">ChitraGuess</h1>
+          <h1 className="text-5xl font-black tracking-normal text-ink sm:text-7xl">SketchIt</h1>
           <p className="mt-3 text-2xl font-black text-ink/80">Draw Telugu. Guess Fast.</p>
           <p className="mt-5 max-w-xl text-base font-semibold leading-7 text-ink/65">
             Ready to draw? Create a room, call your friends, and race through funny sketches, Telugu words, and fast guesses.

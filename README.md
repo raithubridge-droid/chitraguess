@@ -1,8 +1,8 @@
-# ChitraGuess
+# SketchIt
 
-ChitraGuess is a multiplayer drawing and guessing party game for Telugu friends and families. Players join a room with a nickname and a 6-character room code, one player draws, and everyone else races to guess the word.
+SketchIt is a multiplayer drawing and guessing party game for Telugu friends and families. Players join a room with a nickname and a 6-character room code, one player draws, and everyone else races to guess the word.
 
-The MVP supports Telugu and English word modes, room settings, real-time drawing, live guesses, scoring, drawer rotation, and a final winner screen. Room state is currently stored in memory on the Socket.IO server.
+The SketchIt MVP supports Telugu and English word modes, room settings, real-time drawing, live guesses, scoring, drawer rotation, and a final winner screen. Room state is currently stored in memory on the Socket.IO server.
 
 ## Tech Stack
 
@@ -99,7 +99,7 @@ Client deployment settings:
 
 After deploying, verify:
 
-- Backend health check returns `{ "status": "ok", "app": "ChitraGuess server" }`.
+- Backend health check returns `{ "status": "ok", "app": "SketchIt server" }`.
 - Frontend can create and join rooms.
 - Two browser tabs can connect to the same deployed room.
 

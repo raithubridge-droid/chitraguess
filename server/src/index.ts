@@ -120,11 +120,11 @@ const socketRooms = new Map<string, string>();
 app.use(cors({ origin: ALLOWED_CLIENT_ORIGINS }));
 
 app.get("/", (_request, response) => {
-  response.json({ app: "ChitraGuess", status: "ok" });
+  response.json({ app: "SketchIt", status: "ok" });
 });
 
 app.get("/health", (_request, response) => {
-  response.json({ status: "ok", app: "ChitraGuess server" });
+  response.json({ status: "ok", app: "SketchIt server" });
 });
 
 function normalizeRoomCode(code: string) {
@@ -920,5 +920,5 @@ io.on("connection", (socket) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`ChitraGuess server running on http://localhost:${PORT}`);
+  console.log(`SketchIt server running on http://localhost:${PORT}`);
 });
