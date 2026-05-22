@@ -26,6 +26,7 @@ const BRUSH_SIZES = [
   { label: "XL", value: 22 }
 ] as const;
 const STORAGE_KEYS = ["chitraguess:nickname", "chitraguess:roomCode"];
+const INVITE_URL = "https://sketchit-game.vercel.app";
 const DEFAULT_SETTINGS: RoomSettings = {
   language: "Telugu",
   rounds: 3,
@@ -129,6 +130,29 @@ function HintTiles({ hint }: { hint: string }) {
       )}
     </div>
   );
+}
+
+async function copyTextToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.top = "-9999px";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+
+    try {
+      return document.execCommand("copy");
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  }
 }
 
 export default function RoomClient({ code }: { code: string }) {
@@ -451,11 +475,45 @@ export default function RoomClient({ code }: { code: string }) {
   }
 
   async function handleCopyRoomCode() {
-    try {
-      await navigator.clipboard.writeText(code);
+    if (await copyTextToClipboard(code)) {
       setErrorMessage("Room code copied!");
-    } catch {
+    } else {
       setErrorMessage("Could not copy room code. Please copy it manually.");
+    }
+  }
+
+  async function handleInviteFriends() {
+    const inviteMessage = `Join my SketchIt room 🎨
+Draw Telugu words and guess with friends!
+
+Room Code: ${code}
+Play here: ${INVITE_URL}`;
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: "Join my SketchIt room",
+          text: inviteMessage,
+          url: INVITE_URL
+        });
+      } else {
+        const copied = await copyTextToClipboard(inviteMessage);
+        if (!copied) {
+          throw new Error("Clipboard unavailable");
+        }
+      }
+
+      setErrorMessage("Invite copied!");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
+
+      if (await copyTextToClipboard(inviteMessage)) {
+        setErrorMessage("Invite copied!");
+      } else {
+        setErrorMessage("Could not share invite. Please copy the room code manually.");
+      }
     }
   }
 
@@ -516,27 +574,27 @@ export default function RoomClient({ code }: { code: string }) {
 
   return (
     <main
-      className={`min-h-screen bg-[radial-gradient(circle_at_top_left,#fff3cf,transparent_34%),linear-gradient(180deg,#fffaf1_0%,#f7efe1_100%)] px-3 py-3 text-ink sm:px-5 sm:py-5 lg:pb-8 ${
+      className={`min-h-screen bg-[radial-gradient(circle_at_top_left,#fff3cf,transparent_34%),linear-gradient(180deg,#fffaf1_0%,#f7efe1_100%)] px-2 py-2 text-ink sm:px-5 sm:py-5 lg:pb-8 ${
         showMobileGuessBar ? "pb-28" : "pb-5"
       }`}
     >
-      <section className="mx-auto flex w-full max-w-7xl flex-col gap-3 lg:gap-4">
-        <header className="relative z-30 rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5 backdrop-blur sm:p-4 lg:sticky lg:top-3 lg:z-40">
-          <div className="flex items-center justify-between gap-3">
+      <section className="mx-auto flex w-full max-w-7xl flex-col gap-2 lg:gap-4">
+        <header className="relative z-30 rounded-lg border border-ink/10 bg-white/95 p-1.5 shadow-lg shadow-ink/5 backdrop-blur sm:p-4 lg:sticky lg:top-3 lg:z-40">
+          <div className="flex items-center justify-between gap-2 sm:gap-3">
             <button type="button" onClick={handleLeaveRoom} className="min-w-0 text-left">
-              <span className="inline-flex rounded-lg bg-ink p-1 shadow-sm">
-                <SketchItLogo className="rounded-md" />
+              <span className="inline-flex rounded-md bg-ink p-1 shadow-sm sm:rounded-lg">
+                <SketchItLogo size="xs" className="rounded" />
               </span>
             </button>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-black uppercase tracking-[0.14em] text-ink/50">Room code</p>
-              <div className="mt-1 flex min-w-0 items-center gap-2">
-                <span className="min-w-0 truncate text-2xl font-black tracking-normal sm:text-3xl">{code}</span>
+              <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+                <span className="text-xs font-black uppercase tracking-[0.12em] text-ink/45">Room</span>
+                <span className="min-w-0 truncate text-xl font-black tracking-normal sm:text-3xl">{code}</span>
                 <button
                   type="button"
                   onClick={handleCopyRoomCode}
                   aria-label={`Copy room code ${code}`}
-                  className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-md border border-ink/15 bg-white px-3 py-2 text-sm font-black text-ink shadow-sm transition hover:border-ink/30 active:scale-[0.98]"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-ink/15 bg-white text-ink shadow-sm transition hover:border-ink/30 active:scale-[0.98] sm:h-10 sm:w-auto sm:gap-1 sm:px-3 sm:py-2 sm:text-sm sm:font-black"
                 >
                   <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M8 8h10v12H8z" />
@@ -556,9 +614,9 @@ export default function RoomClient({ code }: { code: string }) {
                 }}
                 title={settingsLocked ? "Settings locked after game starts" : "Room settings"}
                 aria-label="Room settings"
-                className="inline-flex h-12 w-12 items-center justify-center rounded-md border border-ink/15 bg-white text-ink shadow-sm transition active:scale-[0.98]"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-ink/15 bg-white text-ink shadow-sm transition active:scale-[0.98] sm:h-12 sm:w-12"
               >
-                <span aria-hidden="true" className="text-xl">⚙️</span>
+                <span aria-hidden="true" className="text-base sm:text-xl">⚙️</span>
                 <svg aria-hidden="true" className="hidden h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                   <path
                     strokeLinecap="round"
@@ -571,22 +629,34 @@ export default function RoomClient({ code }: { code: string }) {
             </div>
           </div>
 
-          <div className="mt-3 grid gap-2 sm:flex sm:items-center sm:justify-between">
+          <div className="mt-1.5 grid gap-1.5 sm:mt-3 sm:flex sm:items-center sm:justify-between">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-palm/10 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-palm">
+              <span className="rounded-full bg-palm/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-palm sm:px-3 sm:py-1 sm:text-xs">
                 {phaseLabel}
               </span>
-              <span className="rounded-full bg-marigold/25 px-3 py-1 text-xs font-black text-ink">
+              <span className="rounded-full bg-marigold/25 px-2 py-0.5 text-[10px] font-black text-ink sm:px-3 sm:py-1 sm:text-xs">
                 {settings.language} · {settings.category}
               </span>
               <span className="text-xs font-bold text-ink/55">{status}</span>
             </div>
-            <div className="grid grid-cols-2 gap-2 sm:flex">
+            <button
+              type="button"
+              onClick={handleInviteFriends}
+              className="inline-flex min-h-8 items-center justify-center gap-1 rounded-md bg-marigold px-3 py-1 text-xs font-black text-ink shadow-sm transition hover:bg-marigold/85 active:scale-[0.98] sm:min-h-10 sm:px-3 sm:py-2 sm:text-sm"
+            >
+              <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 12v7a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-7" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 16V4" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="m7 9 5-5 5 5" />
+              </svg>
+              Invite Friends
+            </button>
+            <div className="grid grid-cols-2 gap-1.5 sm:flex sm:gap-2">
               {canStartGame ? (
                 <button
                   type="button"
                   onClick={handleStartGame}
-                  className="rounded-md bg-palm px-4 py-2.5 text-sm font-black text-white shadow-sm transition hover:bg-palm/90 active:scale-[0.98]"
+                  className="rounded-md bg-palm px-3 py-1.5 text-xs font-black text-white shadow-sm transition hover:bg-palm/90 active:scale-[0.98] sm:px-4 sm:py-2.5 sm:text-sm"
                 >
                   {gameState?.gameOver ? "🏆 Play Again" : "🎨 Start Game"}
                 </button>
@@ -594,7 +664,7 @@ export default function RoomClient({ code }: { code: string }) {
               <button
                 type="button"
                 onClick={handleLeaveRoom}
-                className="rounded-md border border-ink/15 bg-white px-4 py-2.5 text-sm font-black text-ink shadow-sm transition hover:border-ink/30 active:scale-[0.98]"
+                className="rounded-md border border-ink/15 bg-white px-3 py-1.5 text-xs font-black text-ink shadow-sm transition hover:border-ink/30 active:scale-[0.98] sm:px-4 sm:py-2.5 sm:text-sm"
               >
                 Back Home
               </button>
@@ -757,38 +827,35 @@ export default function RoomClient({ code }: { code: string }) {
           </div>
         ) : null}
 
-        <section className="rounded-lg border border-ink/10 bg-white/95 p-3 shadow-lg shadow-ink/5 sm:p-4">
-          <div className="grid gap-3">
+        <section className="rounded-lg border border-ink/10 bg-white/95 p-1.5 shadow-lg shadow-ink/5 sm:p-4">
+          <div className="grid gap-1.5 sm:gap-3">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-xs font-black uppercase tracking-[0.14em] text-palm">సూపర్! Current game</p>
-                <h1 className="mt-1 text-2xl font-black tracking-normal sm:text-3xl">{statusTitle}</h1>
-                <p className="mt-1 text-sm font-bold text-ink/60">{roundSummary}</p>
+                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-palm sm:text-xs">సూపర్! Current game</p>
+                <h1 className="text-lg font-black tracking-normal sm:mt-1 sm:text-3xl">{statusTitle}</h1>
+                <p className="mt-0.5 truncate text-xs font-bold text-ink/60 sm:mt-1 sm:text-sm">{roundSummary}</p>
               </div>
-              <div className="w-28 shrink-0 rounded-md bg-ink px-3 py-2 text-center text-white shadow-sm sm:w-32 sm:py-3">
-                <p className="text-[10px] font-black uppercase tracking-[0.14em] text-white/70">⏱️ Timer</p>
-                <p className="text-xl font-black leading-none sm:text-2xl">
-                  {gameState?.hasActiveRound && !gameState.isChoosingWord ? `${gameState.secondsRemaining}s` : "--"}
-                </p>
-              </div>
+              <p className="shrink-0 rounded-full bg-ink/5 px-2 py-0.5 text-xs font-black text-ink sm:px-3 sm:py-2 sm:text-xl">
+                ⏱ {gameState?.hasActiveRound && !gameState.isChoosingWord ? `${gameState.secondsRemaining}s` : "--"}
+              </p>
             </div>
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-md bg-paper px-3 py-2">
-                <p className="text-[10px] font-black uppercase text-ink/50">Players</p>
-                <p className="text-xl font-black">{players.length}</p>
+            <div className="grid grid-cols-3 gap-1 text-center sm:gap-2">
+              <div className="rounded-md bg-paper px-2 py-1 sm:px-3 sm:py-2">
+                <p className="text-[9px] font-black uppercase text-ink/50 sm:text-[10px]">Players</p>
+                <p className="text-base font-black sm:text-xl">{players.length}</p>
               </div>
-              <div className="rounded-md bg-paper px-3 py-2">
-                <p className="text-[10px] font-black uppercase text-ink/50">Round</p>
-                <p className="text-xl font-black">{gameState?.currentRoundNumber || 0}/{settings.rounds}</p>
+              <div className="rounded-md bg-paper px-2 py-1 sm:px-3 sm:py-2">
+                <p className="text-[9px] font-black uppercase text-ink/50 sm:text-[10px]">Round</p>
+                <p className="text-base font-black sm:text-xl">{gameState?.currentRoundNumber || 0}/{settings.rounds}</p>
               </div>
-              <div className="rounded-md bg-paper px-3 py-2">
-                <p className="text-[10px] font-black uppercase text-ink/50">Mode</p>
-                <p className="text-sm font-black leading-6">{settings.difficulty}</p>
+              <div className="rounded-md bg-paper px-2 py-1 sm:px-3 sm:py-2">
+                <p className="text-[9px] font-black uppercase text-ink/50 sm:text-[10px]">Mode</p>
+                <p className="text-xs font-black leading-6 sm:text-sm">{settings.difficulty}</p>
               </div>
             </div>
           </div>
 
-          <div className="mt-3 rounded-md bg-paper px-4 py-3">
+          <div className="mt-1.5 rounded-md bg-paper px-2.5 py-1.5 sm:mt-3 sm:px-4 sm:py-3">
             {gameState?.gamePaused ? (
               <>
                 <p className="text-sm font-bold text-ink/60">Game paused</p>
@@ -882,7 +949,7 @@ export default function RoomClient({ code }: { code: string }) {
           </section>
 
           <section className="order-1 grid gap-3 lg:order-2">
-            <div className="rounded-lg border border-ink/10 bg-white p-2 shadow-lg shadow-ink/5">
+            <div className="rounded-lg border border-ink/10 bg-white p-1 shadow-lg shadow-ink/5 sm:p-2">
               {gameState?.gameOver && winner ? (
                 <section className="flex min-h-[360px] flex-col items-center justify-center rounded-md bg-paper px-4 py-10 text-center sm:min-h-[460px]">
                   <div className="animate-[winnerScale_700ms_cubic-bezier(0.34,1.56,0.64,1)_both] rounded-lg border border-marigold/70 bg-white px-6 py-7 shadow-sm">
