@@ -155,6 +155,18 @@ async function copyTextToClipboard(text: string) {
   }
 }
 
+function roomPlayerId(code: string) {
+  const storageKey = `sketchit:playerId:${code}`;
+  const existing = window.sessionStorage.getItem(storageKey);
+  if (existing) {
+    return existing;
+  }
+
+  const nextId = crypto.randomUUID();
+  window.sessionStorage.setItem(storageKey, nextId);
+  return nextId;
+}
+
 export default function RoomClient({ code }: { code: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -218,10 +230,14 @@ export default function RoomClient({ code }: { code: string }) {
     }
 
     socket.connect();
+    const clientId = roomPlayerId(code);
     setStatus(socket.connected ? "Connected" : "Connecting...");
-    socket.emit("join-room", { code, nickname });
+    socket.emit("join-room", { code, nickname, clientId });
 
-    socket.on("connect", () => setStatus("Connected"));
+    socket.on("connect", () => {
+      setStatus("Connected");
+      socket.emit("join-room", { code, nickname, clientId });
+    });
     socket.on("disconnect", () => setStatus("Disconnected"));
     socket.on("players", handlePlayers);
     socket.on("draw-stroke", handleStroke);
@@ -231,7 +247,6 @@ export default function RoomClient({ code }: { code: string }) {
     socket.on("error-message", handleErrorMessage);
 
     return () => {
-      socket.emit("leave-room", { code });
       socket.off("connect");
       socket.off("disconnect");
       socket.off("players", handlePlayers);

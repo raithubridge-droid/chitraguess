@@ -42,6 +42,7 @@ type RoomState = {
   settings: RoomSettings;
   playerOrder: string[];
   turnsCompleted: number;
+  usedWordIdsThisRound: Set<string>;
   roundTimer: ReturnType<typeof setInterval> | null;
   currentRound: {
     drawerId: string;
@@ -59,6 +60,7 @@ type RoomState = {
 type JoinRoomPayload = {
   code?: string;
   nickname?: string;
+  clientId?: string;
 };
 
 type StrokePayload = {
@@ -118,6 +120,11 @@ const io = new Server(httpServer, {
 
 const rooms = new Map<string, RoomState>();
 const socketRooms = new Map<string, string>();
+const socketPlayers = new Map<string, string>();
+const playerSockets = new Map<string, string>();
+const pendingDisconnects = new Map<string, ReturnType<typeof setTimeout>>();
+const pendingDisconnectSockets = new Map<string, string>();
+const DISCONNECT_GRACE_MS = 30000;
 
 app.use(cors({ origin: ALLOWED_CLIENT_ORIGINS }));
 
@@ -145,6 +152,10 @@ function roomCodeFromPayload(payload: unknown) {
 function normalizeNickname(nickname: string) {
   const cleaned = nickname.trim().slice(0, 24);
   return cleaned || "Guest";
+}
+
+function normalizeClientId(clientId: unknown) {
+  return typeof clientId === "string" ? clientId.trim().replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80) : "";
 }
 
 function normalizeAnswer(answer: string) {
@@ -208,6 +219,7 @@ function getOrCreateRoom(code: string) {
     settings: { ...DEFAULT_ROOM_SETTINGS },
     playerOrder: [],
     turnsCompleted: 0,
+    usedWordIdsThisRound: new Set<string>(),
     roundTimer: null,
     currentRound: null
   };
@@ -230,16 +242,28 @@ function publicWordChoice(word: TeluguWord): PublicWordChoice {
   };
 }
 
-function randomWordChoices(settings: RoomSettings) {
+function randomWordChoices(settings: RoomSettings, excludedWordIds = new Set<string>()) {
   const words = getWords(settings);
-  const shuffledWords = [...words].sort(() => Math.random() - 0.5);
-  const choices = shuffledWords.slice(0, 3);
+  const eligibleWords = words.filter((word) => !excludedWordIds.has(word.id));
+  const wordPool = eligibleWords.length > 0 ? eligibleWords : words;
+  const shuffledWords = [...wordPool].sort(() => Math.random() - 0.5);
+  const choices: TeluguWord[] = [];
+
+  for (const word of shuffledWords) {
+    if (!choices.some((choice) => choice.answer === word.answer)) {
+      choices.push(word);
+    }
+
+    if (choices.length === 3) {
+      return choices;
+    }
+  }
 
   if (choices.length >= 3) {
     return choices;
   }
 
-  for (const word of getWords(settings)) {
+  for (const word of wordPool) {
     if (!choices.some((choice) => choice.answer === word.answer)) {
       choices.push(word);
     }
@@ -387,11 +411,11 @@ function currentTurnInRound(room: RoomState) {
   return (room.turnsCompleted % room.playerOrder.length) + 1;
 }
 
-function gameStateForSocket(room: RoomState, socketId: string) {
+function gameStateForPlayer(room: RoomState, playerId: string) {
   const hostId = hostIdForRoom(room) ?? "";
   const round = room.currentRound;
-  const isDrawer = round?.drawerId === socketId;
-  const hasGuessedCorrectly = round?.correctGuessers.has(socketId) ?? false;
+  const isDrawer = round?.drawerId === playerId;
+  const hasGuessedCorrectly = round?.correctGuessers.has(playerId) ?? false;
   const selectedWord = round?.word ?? null;
   const isChoosingWord = Boolean(round && !selectedWord);
 
@@ -399,7 +423,7 @@ function gameStateForSocket(room: RoomState, socketId: string) {
     hostId,
     drawerId: round?.drawerId ?? null,
     drawerName: round ? room.players.get(round.drawerId)?.nickname ?? "Drawer" : null,
-    isHost: hostId === socketId,
+    isHost: hostId === playerId,
     isDrawer,
     gameStarted: room.gameStarted,
     gameOver: room.gameOver,
@@ -438,8 +462,11 @@ function emitGameState(code: string) {
     return;
   }
 
-  for (const socketId of room.players.keys()) {
-    io.to(socketId).emit("game-state", gameStateForSocket(room, socketId));
+  for (const playerId of room.players.keys()) {
+    const socketId = playerSockets.get(playerId);
+    if (socketId) {
+      io.to(socketId).emit("game-state", gameStateForPlayer(room, playerId));
+    }
   }
 }
 
@@ -530,6 +557,10 @@ function startNextTurn(code: string, room: RoomState, reason?: string) {
     room.messages.push(makeMessage(reason));
   }
 
+  if (room.playerOrder.length > 0 && room.turnsCompleted % room.playerOrder.length === 0) {
+    room.usedWordIdsThisRound = new Set<string>();
+  }
+
   const targetTurnIndex = room.turnsCompleted % room.playerOrder.length;
   const orderedPlayerIds = [
     ...room.playerOrder.slice(targetTurnIndex),
@@ -549,7 +580,7 @@ function startNextTurn(code: string, room: RoomState, reason?: string) {
   room.currentRound = {
     drawerId: drawer.id,
     word: null,
-    wordChoices: randomWordChoices(room.settings),
+    wordChoices: randomWordChoices(room.settings, room.usedWordIdsThisRound),
     hintRevealIndexes: [],
     revealedCount: 0,
     strokes: [],
@@ -610,6 +641,7 @@ function startMatch(code: string, room: RoomState) {
   clearRoundTimer(room);
   room.playerOrder = Array.from(room.players.keys());
   room.turnsCompleted = 0;
+  room.usedWordIdsThisRound = new Set<string>();
   room.currentRound = null;
   room.gameStarted = true;
   room.gameOver = false;
@@ -649,8 +681,9 @@ function isValidStroke(stroke: StrokePayload) {
   return hasValidId && hasValidPoints && hasValidColor && hasValidBrushSize && hasValidTool;
 }
 
-function leaveCurrentRoom(socket: Socket) {
+function leaveCurrentRoom(socket: Socket, reason = "left") {
   const existingCode = socketRooms.get(socket.id);
+  const playerId = socketPlayers.get(socket.id);
   if (!existingCode) {
     return;
   }
@@ -659,15 +692,34 @@ function leaveCurrentRoom(socket: Socket) {
   const room = rooms.get(existingCode);
   if (!room) {
     socketRooms.delete(socket.id);
+    socketPlayers.delete(socket.id);
+    if (playerId) {
+      playerSockets.delete(playerId);
+    }
     return;
   }
 
-  const leavingPlayer = room.players.get(socket.id);
-  room.players.delete(socket.id);
-  room.scores.delete(socket.id);
+  if (!playerId) {
+    socketRooms.delete(socket.id);
+    return;
+  }
+
+  const pendingDisconnect = pendingDisconnects.get(playerId);
+  if (pendingDisconnect) {
+    clearTimeout(pendingDisconnect);
+    pendingDisconnects.delete(playerId);
+    pendingDisconnectSockets.delete(playerId);
+  }
+
+  const leavingPlayer = room.players.get(playerId);
+  room.players.delete(playerId);
+  room.scores.delete(playerId);
+  socketPlayers.delete(socket.id);
+  playerSockets.delete(playerId);
   compactPlayerOrder(room);
-  logRoom(existingCode, "Player left", {
+  logRoom(existingCode, reason === "disconnect" ? "Player disconnected after grace period" : "Player left", {
     socketId: socket.id,
+    playerId,
     nickname: leavingPlayer?.nickname,
     remainingPlayers: room.players.size
   });
@@ -687,7 +739,7 @@ function leaveCurrentRoom(socket: Socket) {
     return;
   }
 
-  if (room.currentRound?.drawerId === socket.id) {
+  if (room.currentRound?.drawerId === playerId) {
     socketRooms.delete(socket.id);
     broadcastPlayers(existingCode);
     startNextTurn(existingCode, room, "The drawer left. Moving to the next turn.");
@@ -706,6 +758,37 @@ function leaveCurrentRoom(socket: Socket) {
   emitGameState(existingCode);
 }
 
+function scheduleDisconnect(socket: Socket) {
+  const playerId = socketPlayers.get(socket.id);
+  const code = socketRooms.get(socket.id);
+  if (!playerId || !code) {
+    leaveCurrentRoom(socket, "disconnect");
+    return;
+  }
+
+  playerSockets.delete(playerId);
+  const existingTimer = pendingDisconnects.get(playerId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  pendingDisconnects.set(
+    playerId,
+    setTimeout(() => {
+      pendingDisconnects.delete(playerId);
+      pendingDisconnectSockets.delete(playerId);
+      leaveCurrentRoom(socket, "disconnect");
+    }, DISCONNECT_GRACE_MS)
+  );
+  pendingDisconnectSockets.set(playerId, socket.id);
+
+  logRoom(code, "Player disconnected; waiting for reconnect", {
+    socketId: socket.id,
+    playerId,
+    graceMs: DISCONNECT_GRACE_MS
+  });
+}
+
 io.on("connection", (socket) => {
   socket.on("join-room", (payload?: JoinRoomPayload) => {
     const code = roomCodeFromPayload(payload);
@@ -714,28 +797,51 @@ io.on("connection", (socket) => {
       return;
     }
 
-    leaveCurrentRoom(socket);
-
     const nickname = normalizeNickname(payload?.nickname ?? "");
-    const room = getOrCreateRoom(code);
-    room.players.set(socket.id, { id: socket.id, nickname });
-    if (!room.scores.has(socket.id)) {
-      room.scores.set(socket.id, 0);
+    const playerId = normalizeClientId(payload?.clientId) || socket.id;
+    const existingCode = socketRooms.get(socket.id);
+    const existingPlayerId = socketPlayers.get(socket.id);
+    if (existingCode && (existingCode !== code || existingPlayerId !== playerId)) {
+      leaveCurrentRoom(socket);
     }
-    if (room.gameStarted && !room.gameOver && !room.playerOrder.includes(socket.id)) {
-      room.playerOrder.push(socket.id);
+
+    const room = getOrCreateRoom(code);
+    const pendingDisconnect = pendingDisconnects.get(playerId);
+    const isReconnect = room.players.has(playerId);
+    if (pendingDisconnect) {
+      clearTimeout(pendingDisconnect);
+      pendingDisconnects.delete(playerId);
+      const oldSocketId = pendingDisconnectSockets.get(playerId);
+      if (oldSocketId) {
+        socketRooms.delete(oldSocketId);
+        socketPlayers.delete(oldSocketId);
+      }
+      pendingDisconnectSockets.delete(playerId);
+    }
+
+    room.players.set(playerId, { id: playerId, nickname });
+    if (!room.scores.has(playerId)) {
+      room.scores.set(playerId, 0);
+    }
+    if (room.gameStarted && !room.gameOver && !room.playerOrder.includes(playerId)) {
+      room.playerOrder.push(playerId);
     }
     socketRooms.set(socket.id, code);
+    socketPlayers.set(socket.id, playerId);
+    playerSockets.set(playerId, socket.id);
     socket.join(code);
-    logRoom(code, "Player joined", {
+    logRoom(code, isReconnect ? "Player reconnected" : "Player joined", {
       socketId: socket.id,
+      playerId,
       nickname,
       players: room.players.size,
       gameStarted: room.gameStarted,
       gamePaused: room.gamePaused
     });
     broadcastPlayers(code);
-    room.messages.push(makeMessage(`${nickname} joined the room.`));
+    if (!isReconnect) {
+      room.messages.push(makeMessage(`${nickname} joined the room.`));
+    }
     if (room.gamePaused && hasEnoughPlayers(room)) {
       startNextTurn(code, room, "A player joined. Game continues!");
       return;
@@ -747,13 +853,14 @@ io.on("connection", (socket) => {
   socket.on("update-room-settings", (payload?: { code?: string; settings?: Partial<RoomSettings> }) => {
     const code = roomCodeFromPayload(payload);
     const room = rooms.get(code);
+    const playerId = socketPlayers.get(socket.id);
     if (!room || socketRooms.get(socket.id) !== code) {
       rejectAction(socket, code, "Join a room before changing settings.");
       return;
     }
 
     const hostId = hostIdForRoom(room);
-    if (hostId !== socket.id) {
+    if (hostId !== playerId) {
       rejectAction(socket, code, "Only the host can update room settings.");
       return;
     }
@@ -774,13 +881,14 @@ io.on("connection", (socket) => {
   socket.on("start-game", (payload?: { code?: string }) => {
     const code = roomCodeFromPayload(payload);
     const room = rooms.get(code);
+    const playerId = socketPlayers.get(socket.id);
     if (!room || socketRooms.get(socket.id) !== code) {
       rejectAction(socket, code, "Join a room before starting the game.");
       return;
     }
 
     const hostId = hostIdForRoom(room);
-    if (hostId !== socket.id) {
+    if (hostId !== playerId) {
       rejectAction(socket, code, "Only the host can start the game.");
       return;
     }
@@ -801,12 +909,13 @@ io.on("connection", (socket) => {
   socket.on("select-word", (payload?: { code?: string; wordId?: string }) => {
     const code = roomCodeFromPayload(payload);
     const room = rooms.get(code);
+    const playerId = socketPlayers.get(socket.id);
     if (!room || socketRooms.get(socket.id) !== code || !room.currentRound) {
       rejectAction(socket, code, "There is no active word choice.");
       return;
     }
 
-    if (room.currentRound.drawerId !== socket.id || room.currentRound.word) {
+    if (room.currentRound.drawerId !== playerId || room.currentRound.word) {
       rejectAction(socket, code, "Only the current drawer can choose a word.");
       return;
     }
@@ -818,6 +927,7 @@ io.on("connection", (socket) => {
     }
 
     room.currentRound.word = selectedWord;
+    room.usedWordIdsThisRound.add(selectedWord.id);
     room.currentRound.hintRevealIndexes = makeHintRevealIndexes(selectedWord.answer);
     startRoundTimer(code, room);
   });
@@ -825,23 +935,29 @@ io.on("connection", (socket) => {
   socket.on("submit-guess", (payload?: { code?: string; guess?: string }) => {
     const code = roomCodeFromPayload(payload);
     const room = rooms.get(code);
+    const playerId = socketPlayers.get(socket.id);
     if (!room || socketRooms.get(socket.id) !== code || !room.currentRound?.word) {
       rejectAction(socket, code, "There is no active word to guess.");
       return;
     }
 
-    const player = room.players.get(socket.id);
+    if (!playerId) {
+      rejectAction(socket, code, "Join the room before guessing.");
+      return;
+    }
+
+    const player = room.players.get(playerId);
     if (!player) {
       rejectAction(socket, code, "Join the room before guessing.");
       return;
     }
 
-    if (room.currentRound.drawerId === socket.id) {
+    if (room.currentRound.drawerId === playerId) {
       rejectAction(socket, code, "Drawer cannot guess their own word.");
       return;
     }
 
-    if (room.currentRound.correctGuessers.has(socket.id)) {
+    if (room.currentRound.correctGuessers.has(playerId)) {
       rejectAction(socket, code, "You already guessed this word correctly.");
       return;
     }
@@ -854,19 +970,19 @@ io.on("connection", (socket) => {
     const acceptedAnswers = [room.currentRound.word.answer, ...room.currentRound.word.acceptedAnswers].map(normalizeAnswer);
     if (acceptedAnswers.includes(normalizeAnswer(guess))) {
       const points = pointsForCorrectGuess(room);
-      room.currentRound.correctGuessers.add(socket.id);
-      room.scores.set(socket.id, (room.scores.get(socket.id) ?? 0) + points);
+      room.currentRound.correctGuessers.add(playerId);
+      room.scores.set(playerId, (room.scores.get(playerId) ?? 0) + points);
       room.scores.set(
         room.currentRound.drawerId,
         (room.scores.get(room.currentRound.drawerId) ?? 0) + DRAWER_BONUS_POINTS
       );
       room.messages.push(makeMessage(`${player.nickname} guessed correctly!`, "correct"));
       logRoom(code, "Correct guess", {
-        playerId: socket.id,
+        playerId,
         nickname: player.nickname,
         points,
         drawerBonus: DRAWER_BONUS_POINTS,
-        score: room.scores.get(socket.id)
+        score: room.scores.get(playerId)
       });
 
       if (everyoneGuessed(room)) {
@@ -882,6 +998,7 @@ io.on("connection", (socket) => {
 
   socket.on("draw-stroke", (payload?: { code?: string; stroke?: StrokePayload }) => {
     const code = roomCodeFromPayload(payload);
+    const playerId = socketPlayers.get(socket.id);
     if (!code || socketRooms.get(socket.id) !== code || !payload?.stroke) {
       rejectAction(socket, code, "Join a room before drawing.");
       return;
@@ -893,7 +1010,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (room.currentRound.drawerId !== socket.id) {
+    if (room.currentRound.drawerId !== playerId) {
       rejectAction(socket, code, "Only the current drawer can draw.");
       return;
     }
@@ -915,6 +1032,7 @@ io.on("connection", (socket) => {
 
   socket.on("clear-canvas", (payload?: { code?: string }) => {
     const code = roomCodeFromPayload(payload);
+    const playerId = socketPlayers.get(socket.id);
     if (!code || socketRooms.get(socket.id) !== code) {
       rejectAction(socket, code, "Join a room before clearing the canvas.");
       return;
@@ -931,7 +1049,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (room.currentRound.drawerId !== socket.id) {
+    if (room.currentRound.drawerId !== playerId) {
       rejectAction(socket, code, "Only the current drawer can clear the canvas.");
       return;
     }
@@ -942,6 +1060,7 @@ io.on("connection", (socket) => {
 
   socket.on("undo-stroke", (payload?: { code?: string }) => {
     const code = roomCodeFromPayload(payload);
+    const playerId = socketPlayers.get(socket.id);
     if (!code || socketRooms.get(socket.id) !== code) {
       rejectAction(socket, code, "Join a room before undoing strokes.");
       return;
@@ -953,7 +1072,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    if (room.currentRound.drawerId !== socket.id) {
+    if (room.currentRound.drawerId !== playerId) {
       rejectAction(socket, code, "Only the current drawer can undo strokes.");
       return;
     }
@@ -967,7 +1086,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    leaveCurrentRoom(socket);
+    scheduleDisconnect(socket);
   });
 });
 
